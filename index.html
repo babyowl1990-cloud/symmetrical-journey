@@ -1,0 +1,502 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FAULTLINE // syntax diagnostic</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/acorn/8.18.0/acorn.min.js"></script>
+<style>
+  :root{
+    --bg: #0b0910;
+    --panel: #14111c;
+    --panel-2: #1a1626;
+    --border: rgba(155,140,242,0.16);
+    --border-hi: rgba(155,140,242,0.4);
+    --violet: #9b8cf2;
+    --violet-dim: #6f5fc9;
+    --error: #ff5d7a;
+    --success: #6ee7c0;
+    --warn: #f2c879;
+    --text: #e7e3f5;
+    --muted: #6f6884;
+  }
+  *{ box-sizing: border-box; }
+  html,body{
+    margin:0; padding:0; height:100%;
+    background: radial-gradient(1200px 800px at 15% -10%, #1b1530 0%, transparent 60%),
+                radial-gradient(1000px 700px at 110% 10%, #150f26 0%, transparent 55%),
+                var(--bg);
+    color: var(--text);
+    font-family: ui-monospace, 'Cascadia Code', 'Fira Code', 'SF Mono', 'JetBrains Mono', Menlo, Consolas, monospace;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap{
+    max-width: 880px;
+    margin: 0 auto;
+    padding: 48px 24px 64px;
+    min-height: 100%;
+  }
+  header{
+    display:flex; align-items:baseline; justify-content:space-between;
+    margin-bottom: 28px;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 18px;
+  }
+  .brand{ display:flex; align-items:baseline; gap:10px; }
+  .brand .mark{ color: var(--violet); font-size: 20px; letter-spacing: 2px; }
+  .brand .name{ font-size: 20px; font-weight: 700; letter-spacing: 3px; }
+  .brand .sub{ color: var(--muted); font-size: 12px; letter-spacing: 2px; text-transform: uppercase; }
+  .status-dot{
+    width:7px; height:7px; border-radius: 50%; background: var(--success);
+    display:inline-block; margin-right: 8px; box-shadow: 0 0 8px var(--success);
+    animation: pulse 2.4s ease-in-out infinite;
+  }
+  @keyframes pulse{ 0%,100%{opacity:1;} 50%{opacity:.35;} }
+  .modebar{
+    display:flex; gap:8px; margin-bottom:18px;
+  }
+  .mode-chip{
+    font-size: 11px; letter-spacing: 1.5px; text-transform: uppercase;
+    color: var(--muted); border: 1px solid var(--border); border-radius: 4px;
+    padding: 5px 10px; background: var(--panel);
+  }
+  .mode-chip.on{ color: var(--violet); border-color: var(--border-hi); }
+
+  #dropzone{
+    position: relative;
+    border: 1px dashed var(--border-hi);
+    border-radius: 10px;
+    background: var(--panel);
+    padding: 56px 24px;
+    text-align: center;
+    cursor: pointer;
+    overflow: hidden;
+    transition: border-color .2s ease, background .2s ease;
+  }
+  #dropzone:hover{ background: var(--panel-2); }
+  #dropzone.drag{
+    border-color: var(--violet);
+    background: var(--panel-2);
+  }
+  #dropzone.flash{ animation: flash .35s ease; }
+  @keyframes flash{
+    0%{ box-shadow: inset 0 0 0 1px var(--violet), 0 0 40px rgba(155,140,242,.35); }
+    100%{ box-shadow: none; }
+  }
+  .scanline{
+    position:absolute; left:0; right:0; height: 2px;
+    background: linear-gradient(90deg, transparent, var(--violet), transparent);
+    opacity: .55;
+    animation: sweep 3.6s linear infinite;
+  }
+  @keyframes sweep{
+    0%{ top: -2px; }
+    100%{ top: 100%; }
+  }
+  .dz-icon{ font-size: 28px; color: var(--violet); margin-bottom: 14px; letter-spacing: 4px;}
+  .dz-title{ font-size: 14px; letter-spacing: 1px; margin-bottom: 6px; }
+  .dz-sub{ font-size: 12px; color: var(--muted); letter-spacing: .5px; }
+  .dz-formats{ margin-top: 14px; font-size: 11px; color: var(--violet-dim); letter-spacing: 2px; }
+  #fileInput{ display:none; }
+
+  #console{
+    margin-top: 22px;
+    background: #0e0c15;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    min-height: 220px;
+    max-height: 480px;
+    overflow-y: auto;
+    padding: 18px 20px;
+    font-size: 13px;
+    line-height: 1.65;
+  }
+  #console::-webkit-scrollbar{ width: 8px; }
+  #console::-webkit-scrollbar-thumb{ background: var(--border-hi); border-radius: 4px; }
+  .console-empty{ color: var(--muted); font-size: 12.5px; }
+  .line{ white-space: pre-wrap; word-break: break-word; opacity:0; animation: appear .18s ease forwards; }
+  @keyframes appear{ to{ opacity:1; } }
+  .ts{ color: var(--muted); }
+  .ok{ color: var(--success); }
+  .bad{ color: var(--error); }
+  .info{ color: var(--violet); }
+  .warn{ color: var(--warn); }
+  .detail{ color: var(--text); padding-left: 22px; opacity: .92; }
+  .rule{ color: var(--border-hi); }
+  .snippet{
+    display:block; margin: 4px 0 4px 22px; padding: 8px 10px;
+    background: rgba(255,93,122,0.08); border-left: 2px solid var(--error);
+    color: #f4c8d2; font-size: 12px; border-radius: 3px;
+  }
+  .caret{ color: var(--error); }
+
+  footer{
+    margin-top: 20px; display:flex; justify-content:space-between;
+    font-size: 11px; color: var(--muted); letter-spacing: .5px;
+  }
+  footer button{
+    background: none; border: 1px solid var(--border); color: var(--muted);
+    font-family: inherit; font-size: 11px; letter-spacing: 1px; text-transform: uppercase;
+    padding: 6px 12px; border-radius: 4px; cursor: pointer;
+  }
+  footer button:hover{ border-color: var(--border-hi); color: var(--violet); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="brand">
+      <span class="mark">◈</span>
+      <span class="name">FAULTLINE</span>
+      <span class="sub">/ syntax diagnostic</span>
+    </div>
+    <div style="font-size:11px; color: var(--muted); letter-spacing:1px;">
+      <span class="status-dot"></span>READY
+    </div>
+  </header>
+
+  <div class="modebar">
+    <div class="mode-chip on">JS / MJS</div>
+    <div class="mode-chip on">JSON</div>
+    <div class="mode-chip on">HTML</div>
+    <div class="mode-chip on">CSS</div>
+  </div>
+
+  <div id="dropzone">
+    <div class="scanline"></div>
+    <div class="dz-icon">⟡</div>
+    <div class="dz-title">DRAG A FILE HERE, OR CLICK TO BROWSE</div>
+    <div class="dz-sub">reads it locally, parses it, tells you exactly where it breaks</div>
+    <div class="dz-formats">.js · .mjs · .cjs · .json · .html · .css</div>
+    <input type="file" id="fileInput" accept=".js,.mjs,.cjs,.json,.html,.htm,.css,text/javascript,application/json,text/html,text/css" />
+  </div>
+
+  <div id="console">
+    <div class="console-empty">// output will print here — nothing sent anywhere, all parsing happens in your browser</div>
+  </div>
+
+  <footer>
+    <span id="lastfile">no file scanned yet</span>
+    <button id="clearBtn">clear console</button>
+  </footer>
+</div>
+
+<script>
+(function(){
+  const dz = document.getElementById('dropzone');
+  const input = document.getElementById('fileInput');
+  const con = document.getElementById('console');
+  const lastfile = document.getElementById('lastfile');
+  const clearBtn = document.getElementById('clearBtn');
+
+  let firstRun = true;
+
+  function ts(){
+    const d = new Date();
+    return d.toTimeString().slice(0,8);
+  }
+
+  function clearEmpty(){
+    if(firstRun){ con.innerHTML = ''; firstRun = false; }
+  }
+
+  function printLine(html, delay){
+    return new Promise(res=>{
+      setTimeout(()=>{
+        const div = document.createElement('div');
+        div.className = 'line';
+        div.innerHTML = html;
+        con.appendChild(div);
+        con.scrollTop = con.scrollHeight;
+        res();
+      }, delay);
+    });
+  }
+
+  async function printSequence(lines){
+    clearEmpty();
+    let t = 0;
+    for(const l of lines){
+      await printLine(l, t);
+      t += 55;
+    }
+  }
+
+  function escapeHtml(s){
+    return s.replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+  }
+
+  function lineColFromIndex(text, idx){
+    let line = 1, col = 1;
+    for(let i=0; i<idx && i<text.length; i++){
+      if(text[i] === '\n'){ line++; col = 1; } else { col++; }
+    }
+    return {line, col};
+  }
+
+  function codeSnippet(text, line, col){
+    const lines = text.split('\n');
+    const target = lines[line-1] ?? '';
+    const caretPad = Math.max(0, col-1);
+    const trimmed = target.length > 120 ? target.slice(0,117) + '...' : target;
+    return `${escapeHtml(trimmed)}\n${' '.repeat(Math.min(caretPad, trimmed.length))}<span class="caret">^</span>`;
+  }
+
+  function detectType(file, text){
+    const name = file.name.toLowerCase();
+    if(name.endsWith('.json')) return 'json';
+    if(name.endsWith('.js') || name.endsWith('.mjs') || name.endsWith('.cjs')) return 'js';
+    if(name.endsWith('.html') || name.endsWith('.htm')) return 'html';
+    if(name.endsWith('.css')) return 'css';
+    // no recognizable extension — sniff content
+    const t = text.trim();
+    if(t.startsWith('<')) return 'html';
+    if((t.startsWith('{') || t.startsWith('[')) ){
+      try{ JSON.parse(t); return 'json'; } catch(e){
+        // could still be intended json with an error, or could be js — fall through
+      }
+    }
+    if(/[{};][\s\S]*:[\s\S]*;/.test(t) && !/function|const|let|var|=>/.test(t)) return 'css';
+    return 'js';
+  }
+
+  // ---- HTML structural check ----
+  // Real browsers auto-correct almost any HTML rather than throwing, so this is a
+  // deliberate structural well-formedness check (tag matching, unterminated tags/
+  // attributes, unclosed comments) — not a full HTML5 parsing-algorithm validator.
+  const VOID_ELEMENTS = new Set(['area','base','br','col','embed','hr','img','input','link','meta','param','source','track','wbr']);
+  const RAW_TEXT_ELEMENTS = new Set(['script','style']);
+
+  function checkHTML(text){
+    const stack = [];
+    const tagRe = /<!--[\s\S]*?-->|<!\[CDATA\[[\s\S]*?\]\]>|<!DOCTYPE[^>]*>|<(\/?)([a-zA-Z][a-zA-Z0-9:-]*)((?:"[^"]*"|'[^']*'|[^'">])*?)(\/?)>/g;
+    let m;
+    let lastIndex = 0;
+    while((m = tagRe.exec(text)) !== null){
+      const full = m[0];
+      if(full.startsWith('<!--') || full.startsWith('<!DOCTYPE') || full.startsWith('<![CDATA[')){
+        lastIndex = tagRe.lastIndex;
+        continue;
+      }
+      const closing = m[1] === '/';
+      const tagName = m[2].toLowerCase();
+      const selfClose = m[4] === '/';
+      const idx = m.index;
+      const lc = lineColFromIndex(text, idx);
+
+      if(closing){
+        if(stack.length === 0){
+          return { ok:false, message: `Closing tag </${tagName}> found with no matching opening tag.`, line: lc.line, col: lc.col+1 };
+        }
+        // find match walking back — catches "extra" mismatched close
+        let matchIdx = -1;
+        for(let i = stack.length-1; i>=0; i--){
+          if(stack[i].name === tagName){ matchIdx = i; break; }
+        }
+        if(matchIdx === -1){
+          return { ok:false, message: `Closing tag </${tagName}> does not match any open tag.`, line: lc.line, col: lc.col+1 };
+        }
+        if(matchIdx !== stack.length-1){
+          const unclosed = stack[stack.length-1];
+          return { ok:false, message: `Mismatched tag: <${unclosed.name}> opened at line ${unclosed.line} was not closed before </${tagName}> appeared.`, line: lc.line, col: lc.col+1 };
+        }
+        stack.pop();
+      } else if(!selfClose && !VOID_ELEMENTS.has(tagName)){
+        stack.push({ name: tagName, line: lc.line, col: lc.col+1 });
+        if(RAW_TEXT_ELEMENTS.has(tagName)){
+          // skip raw text content (script/style bodies aren't tag-matched as HTML)
+          const closeRe = new RegExp('</'+tagName+'\\s*>', 'i');
+          const rest = text.slice(tagRe.lastIndex);
+          const closeMatch = closeRe.exec(rest);
+          if(closeMatch){
+            tagRe.lastIndex += closeMatch.index; // resume right before the close tag so it's matched normally
+          } else {
+            return { ok:false, message: `<${tagName}> opened at line ${lc.line} is never closed.`, line: lc.line, col: lc.col+1 };
+          }
+        }
+      }
+      lastIndex = tagRe.lastIndex;
+    }
+
+    // unterminated tag: an unescaped "<" with no matching ">" before EOF or before another "<"
+    const openBracket = text.lastIndexOf('<');
+    if(openBracket !== -1 && text.indexOf('>', openBracket) === -1){
+      const lc = lineColFromIndex(text, openBracket);
+      return { ok:false, message: 'Unterminated tag — "<" was opened but never closed with ">".', line: lc.line, col: lc.col+1 };
+    }
+
+    if(stack.length > 0){
+      const unclosed = stack[stack.length-1];
+      return { ok:false, message: `<${unclosed.name}> opened at line ${unclosed.line} is never closed.`, line: unclosed.line, col: unclosed.col };
+    }
+
+    return { ok:true };
+  }
+
+  // ---- CSS structural check ----
+  // Per spec, CSS parsers recover from errors by skipping the invalid bit rather
+  // than throwing — so this checks structural integrity (brace/paren/string/comment
+  // balance) rather than full property/value validity.
+  function checkCSS(text){
+    const stack = [];
+    let inString = null; // ' or "
+    let i = 0;
+    const n = text.length;
+    while(i < n){
+      const ch = text[i];
+      if(inString){
+        if(ch === '\\'){ i += 2; continue; }
+        if(ch === inString) inString = null;
+        i++; continue;
+      }
+      if(ch === '/' && text[i+1] === '*'){
+        const end = text.indexOf('*/', i+2);
+        if(end === -1){
+          const lc = lineColFromIndex(text, i);
+          return { ok:false, message: 'Unterminated comment — "/*" was opened but never closed with "*/".', line: lc.line, col: lc.col+1 };
+        }
+        i = end + 2; continue;
+      }
+      if(ch === '"' || ch === "'"){ inString = ch; i++; continue; }
+      if(ch === '{' || ch === '('){
+        stack.push({ ch, idx: i });
+      } else if(ch === '}' || ch === ')'){
+        const want = ch === '}' ? '{' : '(';
+        if(stack.length === 0 || stack[stack.length-1].ch !== want){
+          const lc = lineColFromIndex(text, i);
+          return { ok:false, message: `Unexpected "${ch}" — no matching "${want}" open.`, line: lc.line, col: lc.col+1 };
+        }
+        stack.pop();
+      }
+      i++;
+    }
+    if(inString){
+      const lc = lineColFromIndex(text, text.length-1);
+      return { ok:false, message: 'Unterminated string — a quote was opened but never closed.', line: lc.line, col: lc.col+1 };
+    }
+    if(stack.length > 0){
+      const top = stack[stack.length-1];
+      const lc = lineColFromIndex(text, top.idx);
+      const label = top.ch === '{' ? 'brace "{"' : 'parenthesis "("';
+      return { ok:false, message: `Unclosed ${label} — never matched with a closing ${top.ch === '{' ? '"}"' : '")"'}.`, line: lc.line, col: lc.col+1 };
+    }
+    return { ok:true };
+  }
+
+  function checkJSON(text){
+    try{
+      JSON.parse(text);
+      return { ok:true };
+    }catch(e){
+      const msg = e.message || String(e);
+      const posMatch = msg.match(/position (\d+)/i);
+      let line=null, col=null;
+      if(posMatch){
+        const idx = parseInt(posMatch[1], 10);
+        const lc = lineColFromIndex(text, idx);
+        line = lc.line; col = lc.col;
+      }
+      const lineMatch = msg.match(/line (\d+) column (\d+)/i);
+      if(lineMatch){ line = parseInt(lineMatch[1],10); col = parseInt(lineMatch[2],10); }
+      return { ok:false, message: msg, line, col };
+    }
+  }
+
+  function checkJS(text){
+    const attempts = [
+      { sourceType: 'module' },
+      { sourceType: 'script' }
+    ];
+    let lastErr = null;
+    for(const opts of attempts){
+      try{
+        acorn.parse(text, {
+          ecmaVersion: 'latest',
+          sourceType: opts.sourceType,
+          allowAwaitOutsideFunction: true,
+          allowImportExportEverywhere: true,
+          allowReturnOutsideFunction: true,
+          allowHashBang: true,
+          locations: true
+        });
+        return { ok:true };
+      }catch(e){
+        lastErr = e;
+      }
+    }
+    const line = lastErr.loc ? lastErr.loc.line : null;
+    const col = lastErr.loc ? lastErr.loc.column + 1 : null;
+    let msg = lastErr.message || String(lastErr);
+    msg = msg.replace(/\s*\(\d+:\d+\)\s*$/, '');
+    return { ok:false, message: msg, line, col };
+  }
+
+  async function handleFile(file){
+    dz.classList.add('flash');
+    setTimeout(()=>dz.classList.remove('flash'), 400);
+    lastfile.textContent = file.name;
+
+    const text = await file.text();
+    const lineCount = text.split('\n').length;
+    const type = detectType(file, text);
+    const typeLabels = { json: 'JSON', js: 'JavaScript (ES latest)', html: 'HTML (structural)', css: 'CSS (structural)' };
+    const typeLabel = typeLabels[type];
+
+    const seq = [
+      `<span class="ts">[${ts()}]</span> <span class="info">SCAN INITIATED</span> :: ${escapeHtml(file.name)} <span class="ts">(${text.length} bytes, ${lineCount} lines)</span>`,
+      `<span class="ts">[${ts()}]</span> <span class="rule">TYPE</span> :: ${typeLabel}`,
+    ];
+    if(type === 'html' || type === 'css'){
+      seq.push(`<span class="ts">[${ts()}]</span> <span class="warn">NOTE</span> :: ${type.toUpperCase()} parsers recover from errors instead of throwing — this checks structural integrity (tag/brace/quote matching), not full spec validity`);
+    }
+    await printSequence(seq);
+
+    let result;
+    if(type === 'json') result = checkJSON(text);
+    else if(type === 'html') result = checkHTML(text);
+    else if(type === 'css') result = checkCSS(text);
+    else result = checkJS(text);
+
+    if(result.ok){
+      await printSequence([
+        `<span class="ts">[${ts()}]</span> <span class="ok">✓ NO SYNTAX FAULTS DETECTED</span> — clean parse across ${lineCount} lines`
+      ]);
+    }else{
+      const loc = (result.line != null) ? `Line ${result.line}${result.col!=null ? ', Column '+result.col : ''}` : 'location unknown';
+      const lines = [
+        `<span class="ts">[${ts()}]</span> <span class="bad">✗ SYNTAX ERROR</span> — ${loc}`,
+        `<span class="detail">${escapeHtml(result.message)}</span>`
+      ];
+      if(result.line != null){
+        lines.push(`<span class="snippet">${codeSnippet(text, result.line, result.col || 1)}</span>`);
+      }
+      lines.push(`<span class="ts">[${ts()}]</span> <span class="bad">SCAN COMPLETE</span> — 1 fault detected, parsing halted at first error`);
+      await printSequence(lines);
+    }
+  }
+
+  // drag & drop
+  ['dragenter','dragover'].forEach(evt=>{
+    dz.addEventListener(evt, e=>{ e.preventDefault(); dz.classList.add('drag'); });
+  });
+  ['dragleave','drop'].forEach(evt=>{
+    dz.addEventListener(evt, e=>{ e.preventDefault(); dz.classList.remove('drag'); });
+  });
+  dz.addEventListener('drop', e=>{
+    const file = e.dataTransfer.files[0];
+    if(file) handleFile(file);
+  });
+  dz.addEventListener('click', ()=> input.click());
+  input.addEventListener('change', e=>{
+    const file = e.target.files[0];
+    if(file) handleFile(file);
+  });
+
+  clearBtn.addEventListener('click', ()=>{
+    con.innerHTML = '<div class="console-empty">// cleared</div>';
+    firstRun = false;
+  });
+})();
+</script>
+</body>
+</html>
